@@ -66,7 +66,7 @@ class RowEntityPhiTensor(PassthroughTensor, ADPTensor):
     we refer to the number of 'rows' we simply refer to the length of the first dimension. This
     tensor can have an arbitrary number of dimensions."""
 
-    def __init__(self, rows: Sequence, check_shape: bool = True):
+    def __init__(self, rows: Sequence, check_shape: bool = True, scalar_manager: VirtualMachinePrivateScalarManager = None):
         """Initialize a RowEntityPhiTensor
 
         rows: the actual data organized as an iterable (can be any type of iterable)
@@ -116,9 +116,10 @@ class RowEntityPhiTensor(PassthroughTensor, ADPTensor):
             else:
                 raise Exception(f"{type(entity)}")
 
-    @property
-    def scalar_manager(self) -> VirtualMachinePrivateScalarManager:
-        return self.child[0].scalar_manager
+        if scalar_manager is None:
+            self.scalar_manager = VirtualMachinePrivateScalarManager()
+        else:
+            self.scalar_manager = scalar_manager
 
     @property
     def min_vals(self) -> np.ndarray:
@@ -1027,13 +1028,8 @@ class RowEntityPhiTensor(PassthroughTensor, ADPTensor):
         entity_dict_index: Dict[Entity, int] = {}
         row_entity_index = []
 
-        scalar_manager_list = []
-        scalar_manager_dict_index: Dict[VirtualMachinePrivateScalarManager, int] = {}
-        row_scalar_manager_index = []
-
         for i in self.child:
             entity = i.entity
-            scalar_manager = i.scalar_manager
 
             if entity in entity_dict_index:
                 index = entity_dict_index[entity]
@@ -1042,21 +1038,10 @@ class RowEntityPhiTensor(PassthroughTensor, ADPTensor):
                 index = len(entity_list) - 1
                 entity_dict_index[entity] = index
             row_entity_index.append(index)
-
-            if scalar_manager in scalar_manager_dict_index:
-                vm_index = scalar_manager_dict_index[scalar_manager]
-            else:
-                scalar_manager_list.append(scalar_manager)
-                vm_index = len(scalar_manager_list) - 1
-                scalar_manager_dict_index[scalar_manager] = vm_index
-            row_scalar_manager_index.append(vm_index)
             i._remove_entity_scalar_manager = True
 
         if len(row_entity_index) != len(self.child):
             raise Exception("Length of entity index must match row length")
-
-        if len(row_scalar_manager_index) != len(self.child):
-            raise Exception("Length of scalar manager index must match row length")
 
         if self.serde_concurrency > 0 and concurrency_count() > 1:
             # serde_concurrency == 0 means off
@@ -1085,9 +1070,8 @@ class RowEntityPhiTensor(PassthroughTensor, ADPTensor):
             serde_concurrency=int(self.serde_concurrency),
             rows=output_rows,
             unique_entities=[serialize(x) for x in entity_list],
-            unique_scalar_managers=[serialize(x) for x in scalar_manager_list],
+            scalar_manager=serialize(self.scalar_manager),
             row_entity_index=serialize(np.array(row_entity_index)),
-            row_scalar_manager_index=serialize(np.array(row_scalar_manager_index)),
         )
 
         for child in self.child:
@@ -1099,10 +1083,9 @@ class RowEntityPhiTensor(PassthroughTensor, ADPTensor):
     def _proto2object(proto: RowEntityPhiTensor_PB) -> RowEntityPhiTensor:
         # get back our entities and scalar managers
         unique_entities = [deserialize(x) for x in proto.unique_entities]
-        unique_scalar_managers = [deserialize(x) for x in proto.unique_scalar_managers]
 
         row_entity_index = deserialize(proto.row_entity_index)
-        row_scalar_manager_index = deserialize(proto.row_scalar_manager_index)
+        scalar_manager = deserialize(proto.scalar_manager)
 
         if proto.serde_concurrency > 0 and concurrency_count() > 1:
             # serde_concurrency == 0 means off
@@ -1131,16 +1114,13 @@ class RowEntityPhiTensor(PassthroughTensor, ADPTensor):
         for i, row in enumerate(output_rows):
             row_index = row_entity_index[i]
             entity = unique_entities[row_index]
-            scalar_manager_index = row_scalar_manager_index[i]
-            scalar_manager = unique_scalar_managers[scalar_manager_index]
 
             # re-attach the original de-duplicated data before deserializing
             row.entity = entity
-            row.scalar_manager = scalar_manager
 
             rows.append(row)
 
-        rept = RowEntityPhiTensor(rows=rows)
+        rept = RowEntityPhiTensor(rows=row, scalar_manager=scalar_manager)
         rept.serde_concurrency = proto.serde_concurrency
         return rept
 
